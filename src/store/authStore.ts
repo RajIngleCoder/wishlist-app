@@ -68,12 +68,12 @@ export const useAuthStore = create<AuthState>()(
                   id: freshUser.id,
                   name: freshUser.user_metadata?.name || '',
                   email: freshUser.email || '',
-                  avatar: freshUser.user_metadata?.avatar || '',
+                  avatarUrl: freshUser.user_metadata?.avatar_url || freshUser.user_metadata?.avatar || '', // Use avatarUrl
                 };
 
                 set({
                   user: userData,
-                  isAuthenticated: true,
+                  isAuthenticated: !!freshUser.email_confirmed_at, // Use freshUser's confirmation status
                   isGuestMode: false
                 });
 
@@ -81,14 +81,14 @@ export const useAuthStore = create<AuthState>()(
                 localStorage.setItem('last_login', new Date().toISOString());
                 localStorage.setItem('user_data', JSON.stringify(userData));
                 
-                // Only redirect if not already on dashboard
-                const currentPath = window.location.pathname;
-                if (currentPath !== '/dashboard') {
-                  window.location.href = '/dashboard';
+                if (freshUser.email_confirmed_at) {
+                  // Redirection is now handled by onAuthStateChange in supabaseClient.ts
+                  return; // Successfully logged in, exit function
+                } else {
+                  throw new Error('Please verify your email address before logging in');
                 }
-                return; // Successfully logged in, exit function
               } else {
-                throw new Error('Please verify your email address before logging in');
+                 throw new Error('Failed to re-verify user status. Please try again.');
               }
             }
             if (error.message?.includes('fetch') || error.message?.includes('network')) {
@@ -108,16 +108,21 @@ export const useAuthStore = create<AuthState>()(
           }
 
           // Set user data and authentication state
+          const authUserFromLogin = data.user; 
+          if (!authUserFromLogin) { 
+            throw new Error('Login failed - user data missing after sign in');
+          }
+
           const userData = {
-            id: data.user.id,
-            name: data.user.user_metadata?.name || '',
-            email: data.user.email || '',
-            avatarUrl: data.user.user_metadata?.avatar_url || data.user.user_metadata?.avatar || '', // Prefer avatar_url, fallback to avatar
+            id: authUserFromLogin.id,
+            name: authUserFromLogin.user_metadata?.name || '',
+            email: authUserFromLogin.email || '',
+            avatarUrl: authUserFromLogin.user_metadata?.avatar_url || authUserFromLogin.user_metadata?.avatar || '',
           };
 
           set({
             user: userData,
-            isAuthenticated: true,
+            isAuthenticated: !!authUserFromLogin.email_confirmed_at, // Check confirmation status
             isGuestMode: false
           });
 
@@ -125,11 +130,7 @@ export const useAuthStore = create<AuthState>()(
           localStorage.setItem('last_login', new Date().toISOString());
           localStorage.setItem('user_data', JSON.stringify(userData));
           
-          // Only redirect if not already on dashboard
-          const currentPath = window.location.pathname;
-          if (currentPath !== '/dashboard') {
-            window.location.href = '/dashboard';
-          }
+          // Redirection is now handled by onAuthStateChange in supabaseClient.ts
         } catch (error: any) {
           set({ user: null, isAuthenticated: false });
           throw error;
@@ -184,7 +185,7 @@ export const useAuthStore = create<AuthState>()(
 
           // Show success message and redirect
           set({ user: null, isAuthenticated: false });
-          window.location.href = '/auth/verify-email';
+          // Redirection to /auth/verify-email is now handled by onAuthStateChange or UI logic after successful registration signal
           return;
         } catch (error: any) {
           set({ user: null, isAuthenticated: false });
@@ -364,7 +365,7 @@ export const useAuthStore = create<AuthState>()(
           console.log('[authStore] fetchUser: Final user data to set in store:', finalUserData);
           set({
             user: finalUserData,
-            isAuthenticated: true,
+            isAuthenticated: !!authUser?.email_confirmed_at, // authUser is from supabase.auth.getUser()
             isGuestMode: false, // Ensure guest mode is off when a user is fetched
           });
           console.log('[authStore] fetchUser: Zustand store updated.');
