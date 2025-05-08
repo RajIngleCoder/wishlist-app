@@ -26,67 +26,69 @@ export const useWishStore = create<WishState>()(
           console.error(error.message);
           throw error;
         }
+
+        const isDummyUser = user?.id?.startsWith('dummy-');
+        const currentUserId = user?.id || 'guest';
     
         try {
-          const newWishData = {
-            id: isGuestMode ? `guest-wish-${Date.now()}` : undefined,
-            title: wish.title,
-            description: wish.description || '',
-            price: wish.price || '0',
-            priority: wish.priority || 'medium',
-            link: wish.link || '',
-            imageUrl: wish.imageUrl || '',
-            userId: user?.id || 'guest',
-            listId: wish.listId || null,
-            isFavorite: false,
-            status: 'active',
-            createdAt: new Date().toISOString()
-          };
+          let newWishDataFromInput: Omit<Wish, 'id' | 'createdAt'> = wish;
+          let createdWish: Wish;
 
-          let data;
-          if (isGuestMode) {
-            console.log('[wishStore] addWish: Guest mode, using local data:', newWishData);
-            data = newWishData;
+          if (isGuestMode || isDummyUser) {
+            const localId = `${isGuestMode ? 'guest' : 'dummy'}-wish-${Date.now()}`;
+            createdWish = {
+              ...newWishDataFromInput,
+              id: localId,
+              userId: currentUserId,
+              createdAt: new Date().toISOString(),
+              // Ensure defaults for optional/required fields if not in newWishDataFromInput
+              description: newWishDataFromInput.description || '',
+              price: newWishDataFromInput.price || '0',
+              priority: newWishDataFromInput.priority || 'medium',
+              status: newWishDataFromInput.status || 'active',
+              isFavorite: newWishDataFromInput.isFavorite === undefined ? false : newWishDataFromInput.isFavorite,
+              // listId can be undefined/null if not provided, so no specific default needed unless logic requires one
+            };
+            console.log(`[wishStore] addWish: ${isGuestMode ? 'Guest' : 'Dummy user'} mode, using local data:`, createdWish);
           } else {
-            console.log('[wishStore] addWish: Logged-in user. Auth User details:', JSON.stringify(user), 'Attempting to insert into Supabase. User ID for wish:', user?.id, 'Data to insert:', JSON.stringify(newWishData));
-            const { data: dbDataArray, error } = await supabase
+            // Real user, save to Supabase
+            const payloadForSupabase: Omit<Wish, 'id' | 'createdAt'> & { userId: string } = {
+              ...newWishDataFromInput,
+              userId: currentUserId,
+              description: newWishDataFromInput.description || '',
+              price: newWishDataFromInput.price || '0',
+              priority: newWishDataFromInput.priority || 'medium',
+              status: newWishDataFromInput.status || 'active',
+              isFavorite: newWishDataFromInput.isFavorite === undefined ? false : newWishDataFromInput.isFavorite,
+            };
+            console.log('[wishStore] addWish: Real user. Attempting to insert into Supabase:', payloadForSupabase);
+            const { data: dbData, error } = await supabase
               .from('wishes')
-              .insert([newWishData])
-              .select(); // Removed .single()
-
-            console.log('[wishStore] addWish: Supabase insert response. Error:', error, 'Data Array:', dbDataArray);
+              .insert(payloadForSupabase) // Supabase generates id and createdAt
+              .select()
+              .single();
 
             if (error) {
               console.error("Error adding wish to Supabase:", error);
-              // Log the full error object if it has more details
-              console.error("Full Supabase error object:", JSON.stringify(error, null, 2));
-              let errorMessage = `Failed to create wish: ${error.message}`;
-              if (error.code) errorMessage += ` Code: ${error.code}`;
-              if (error.details) errorMessage += ` Details: ${error.details}`;
-              if (error.hint) errorMessage += ` Hint: ${error.hint}`;
-              throw new Error(errorMessage);
+              throw new Error(`Failed to create wish: ${error.message}`);
             }
-
-            if (!dbDataArray || dbDataArray.length === 0) {
-              console.warn('[wishStore] addWish: No data returned or empty array from Supabase after insert/select, but no error was thrown. This strongly suggests an RLS SELECT policy issue or that the row was not committed/found. Please verify RLS settings for the "wishes" table. Is RLS truly disabled for SELECT operations, or if enabled, does the policy (auth.uid() = user_id) allow reading the new row?');
-              console.log('[wishStore] addWish: Data that was attempted to be inserted:', JSON.stringify(newWishData));
-              throw new Error("No data returned after creating wish. Check RLS SELECT policies or if the insert was successful.");
+            if (!dbData) {
+              console.warn('[wishStore] addWish: No data returned from Supabase. Check RLS policies.');
+              throw new Error("No data returned after creating wish.");
             }
-            // Assuming the first element is the one we want if dbDataArray is not empty
-            data = dbDataArray[0];
-            console.log('[wishStore] addWish: Successfully inserted and retrieved wish:', JSON.stringify(data));
+            createdWish = dbData as Wish;
+            console.log('[wishStore] addWish: Successfully inserted wish:', createdWish);
           }
     
           set((state) => ({
-            wishes: [...state.wishes, data]
+            wishes: [...state.wishes, createdWish]
           }));
 
-          // If not in guest mode and the wish has a listId, refresh the wishes for that list
-          if (!isGuestMode && user && data.listId) {
-            await get().getWishesByList(data.listId);
+          if (user && !isGuestMode && !isDummyUser && createdWish.listId) {
+            await get().getWishesByList(createdWish.listId);
           }
     
-          return data;
+          return createdWish;
         } catch (error: any) {
           console.error('!!!!!!!!!! [wishStore] addWish CATCH BLOCK ENTERED !!!!!!!!!!');
           console.error('Error creating wish:', error);
@@ -138,15 +140,17 @@ export const useWishStore = create<WishState>()(
         }));
       },
       getWishesByList: async (listId) => {
-        const { isGuestMode } = useAuthStore.getState();
+        const { user, isGuestMode } = useAuthStore.getState(); // Get user as well
         const allWishes = get().wishes;
+        const isDummyUser = user?.id?.startsWith('dummy-');
 
-        if (isGuestMode) {
-          const guestWishes = allWishes.filter(wish => wish.listId === listId);
-          // No need to call set() here as we are just reading from existing state for guest mode
-          return guestWishes;
+        if (isGuestMode || isDummyUser) {
+          console.log(`[wishStore] getWishesByList: ${isGuestMode ? 'Guest' : 'Dummy user'} mode. Filtering locally for listId:`, listId);
+          const localWishes = allWishes.filter(wish => wish.listId === listId);
+          return localWishes;
         } else {
-          // Fetch wishes from Supabase for logged-in users
+          // Fetch wishes from Supabase for logged-in, non-dummy users
+          console.log('[wishStore] getWishesByList: Real user mode. Fetching from Supabase for listId:', listId);
           const { data: wishes, error } = await supabase
             .from('wishes')
             .select('*')

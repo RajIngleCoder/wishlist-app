@@ -24,67 +24,73 @@ export const useListStore = create<ListState>()(
           console.error(error.message);
           throw error;
         }
+
+        const isDummyUser = user?.id?.startsWith('dummy-');
+        const currentUserId = user?.id || 'guest'; // Fallback to guest if no user
       
         try {
-          const newList = {
-            id: isGuestMode ? `guest-list-${Date.now()}` : undefined,
-            name: list.name,
-            description: list.description,
-            userId: user?.id || 'guest',
-            isPublic: list.isPublic || false,
-            category: list.category,
-            imageUrl: list.imageUrl,
-            tags: list.tags,
-            type: list.type || 'personal',
-            visibility: list.visibility || 'private',
-            createdAt: new Date().toISOString()
-          };
+          let newWishlistData: Omit<WishList, 'id' | 'createdAt' | 'userId'> = list; // Input type
+          let createdList: WishList;
 
-          let data;
-          if (isGuestMode) {
-            console.log('[listStore] addList: Guest mode, using local data:', newList);
-            data = newList;
+          if (isGuestMode || isDummyUser) {
+            const localId = `${isGuestMode ? 'guest' : 'dummy'}-list-${Date.now()}`;
+            createdList = {
+              ...newWishlistData,
+              id: localId,
+              userId: currentUserId,
+              createdAt: new Date().toISOString(),
+              // Ensure defaults for optional fields if not provided by newWishlistData
+              description: newWishlistData.description || '',
+              type: newWishlistData.type || 'personal',
+              visibility: newWishlistData.visibility || 'private',
+              collaborators: newWishlistData.collaborators || [],
+              tags: newWishlistData.tags || [],
+              category: newWishlistData.category || 'general',
+              imageUrl: newWishlistData.imageUrl || '',
+            };
+            console.log(`[listStore] addList: ${isGuestMode ? 'Guest' : 'Dummy user'} mode, using local data:`, createdList);
           } else {
-            console.log('[listStore] addList: Logged-in user. Auth User details:', JSON.stringify(user), 'Attempting to insert into Supabase. User ID for list:', user?.id, 'Data to insert:', JSON.stringify(newList));
-            const { data: dbDataArray, error } = await supabase
+            // Real user, save to Supabase
+            const payloadForSupabase: Omit<WishList, 'id' | 'createdAt'> & { userId: string } = {
+                ...newWishlistData,
+                userId: currentUserId,
+                // Ensure defaults for optional fields if not provided by newWishlistData for Supabase insert
+                description: newWishlistData.description || '',
+                type: newWishlistData.type || 'personal',
+                visibility: newWishlistData.visibility || 'private',
+                collaborators: newWishlistData.collaborators || [],
+                tags: newWishlistData.tags || [],
+                category: newWishlistData.category || 'general',
+                imageUrl: newWishlistData.imageUrl || '',
+            };
+            console.log('[listStore] addList: Real user. Attempting to insert into Supabase:', payloadForSupabase);
+            const { data: dbData, error } = await supabase
               .from('lists')
-              .insert([newList])
-              .select(); // Removed .single()
-
-            console.log('[listStore] addList: Supabase insert response. Error:', error, 'Data Array:', dbDataArray);
+              .insert(payloadForSupabase) // Supabase generates id and createdAt
+              .select()
+              .single();
 
             if (error) {
               console.error("Error adding list to Supabase:", error);
-              // Log the full error object if it has more details
-              console.error("Full Supabase error object:", JSON.stringify(error, null, 2));
-              let errorMessage = `Failed to create list: ${error.message}`;
-              if (error.code) errorMessage += ` Code: ${error.code}`;
-              if (error.details) errorMessage += ` Details: ${error.details}`;
-              if (error.hint) errorMessage += ` Hint: ${error.hint}`;
-              throw new Error(errorMessage);
+              throw new Error(`Failed to create list: ${error.message}`);
             }
-
-            if (!dbDataArray || dbDataArray.length === 0) {
-              console.warn('[listStore] addList: No data returned or empty array from Supabase after insert/select, but no error was thrown. This strongly suggests an RLS SELECT policy issue or that the row was not committed/found. Please verify RLS settings for the "lists" table. Is RLS truly disabled for SELECT operations, or if enabled, does the policy (auth.uid() = user_id) allow reading the new row?');
-              console.log('[listStore] addList: Data that was attempted to be inserted:', JSON.stringify(newList));
-              throw new Error("No data returned after creating list. Check RLS SELECT policies or if the insert was successful.");
+            if (!dbData) {
+              console.warn('[listStore] addList: No data returned from Supabase. Check RLS policies.');
+              throw new Error("No data returned after creating list.");
             }
-            // Assuming the first element is the one we want if dbDataArray is not empty
-            data = dbDataArray[0];
-            console.log('[listStore] addList: Successfully inserted and retrieved list:', JSON.stringify(data));
+            createdList = dbData as WishList; // Cast because Supabase returns the full object
+            console.log('[listStore] addList: Successfully inserted list:', createdList);
           }
       
-          // Update local state with the new list
           set((state) => ({
-            lists: [...state.lists, data],
+            lists: [...state.lists, createdList],
           }));
       
-          // Fetch updated lists for the current user if not in guest mode
-          if (user && !isGuestMode) {
+          if (user && !isGuestMode && !isDummyUser) {
             await get().getUserLists(user.id);
           }
       
-          return data;
+          return createdList;
         } catch (error: any) {
           console.error('!!!!!!!!!! [listStore] addList CATCH BLOCK ENTERED !!!!!!!!!!');
           console.error('Error creating list:', error);
@@ -136,18 +142,38 @@ export const useListStore = create<ListState>()(
         }));
       },
       getUserLists: async (userId) => {
-        // Fetch lists from Supabase
-        const { data: lists, error } = await supabase
-          .from('lists')
-          .select('*')
-          .eq('userId', userId);
+        const { user, isGuestMode } = useAuthStore.getState();
+        const allLists = get().lists;
+        const isDummyUser = user?.id?.startsWith('dummy-');
 
-        if (error) {
-          console.error("Error fetching lists:", error);
-          return []; // Return empty array in case of error
+        // If the provided userId corresponds to the current dummy user or if in guest mode (and userId might be 'guest')
+        if ((isDummyUser && userId === user?.id) || (isGuestMode && userId === 'guest')) {
+          console.log(`[listStore] getUserLists: ${isGuestMode ? 'Guest' : 'Dummy user'} mode. Filtering locally for userId:`, userId);
+          const localLists = allLists.filter(list => list.userId === userId);
+          set({ lists: localLists }); // Update state with the filtered local lists
+          return localLists;
+        } else if (isDummyUser && userId !== user?.id) {
+          // This case handles if getUserLists is somehow called with a different ID when a dummy user is active.
+          // We should probably return an empty list or only lists for the *active* dummy user.
+          // For now, returning empty to prevent showing other users' data if this scenario is hit.
+          console.warn(`[listStore] getUserLists: Dummy user active, but requested for different userId (${userId}). Returning empty.`);
+          set({ lists: [] }); 
+          return [];
+        } else {
+          // Fetch lists from Supabase for real, non-dummy users
+          console.log('[listStore] getUserLists: Real user mode. Fetching from Supabase for userId:', userId);
+          const { data: lists, error } = await supabase
+            .from('lists')
+            .select('*')
+            .eq('userId', userId);
+
+          if (error) {
+            console.error("Error fetching lists:", error);
+            return []; // Return empty array in case of error
+          }
+          set({ lists: lists || [] }); // Update lists state with fetched data
+          return lists || []; // Return fetched lists
         }
-        set({ lists: lists || [] }); // Update lists state with fetched data
-        return lists || []; // Return fetched lists
       },
     }),
     {

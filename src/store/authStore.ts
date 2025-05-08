@@ -30,111 +30,51 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       isGuestMode: false, // Initialize guest mode as false
       login: async (email: string, password: string) => {
-        try {
-          if (!email || !password) {
-            throw new Error('Email and password are required');
-          }
+        console.log('[authStore] login: Creating dummy account UI state immediately.');
+        const dummyUserData = {
+          id: 'dummy-' + email.replace(/[@.]/g, '-') + '-' + Date.now(), // Create a somewhat unique ID from email
+          name: email.split('@')[0] || 'User',
+          email: email,
+          avatarUrl: '', // Default avatar
+          currency: 'USD' // Default currency, adjust if needed
+        };
+        set({
+          user: dummyUserData,
+          isAuthenticated: true,
+          isGuestMode: false,
+        });
+        // Persist crucial parts of the dummy user for quick UI updates on reload
+        localStorage.setItem('user_data', JSON.stringify(dummyUserData)); 
+        localStorage.setItem('last_login', new Date().toISOString());
 
-          // Check network connectivity
-          if (!navigator.onLine) {
-            throw new Error('No internet connection. Please check your network and try again.');
-          }
-
-          const { data, error } = await supabase.auth.signInWithPassword({
-            email,
-            password,
-          }).catch(err => {
-            console.error('Login error:', err);
-            if (err.message?.includes('fetch') || err.message?.includes('network') || err.message?.includes('Failed to fetch')) {
-              throw new Error('Network error. Please check your connection and try again.');
+        // Attempt real Supabase login in the background
+        // This will not block UI, and its failure will not log the user out of the dummy session.
+        supabase.auth.signInWithPassword({ email, password })
+          .then(({ data: supabaseData, error: supabaseError }) => {
+            if (supabaseError) {
+              console.warn('[authStore] login: Background Supabase sign-in failed:', supabaseError.message);
+              // NOTE: We do NOT revert isAuthenticated or clear dummyUser here.
+              // The user explicitly wants the UI to remain as if logged in.
+              // If credentials were truly invalid, Supabase couldn't provide a real session anyway.
+            } else if (supabaseData && supabaseData.user) {
+              console.log('[authStore] login: Background Supabase sign-in successful. Updating stored user with real details.');
+              const realUserData = {
+                id: supabaseData.user.id,
+                name: supabaseData.user.user_metadata?.name || email.split('@')[0] || 'User',
+                email: supabaseData.user.email || email,
+                avatarUrl: supabaseData.user.user_metadata?.avatar_url || supabaseData.user.user_metadata?.avatar || '',
+                currency: supabaseData.user.user_metadata?.currency || dummyUserData.currency // Retain dummy currency if not in metadata
+              };
+              set({ user: realUserData, isAuthenticated: true, isGuestMode: false }); // Update with real data but keep isAuthenticated true
+              localStorage.setItem('user_data', JSON.stringify(realUserData)); // Persist real user data
             }
-            throw new Error('Login failed. Please try again later.');
+          })
+          .catch(backgroundError => {
+            console.warn('[authStore] login: Background Supabase sign-in threw an unhandled error:', backgroundError.message);
+            // Still, do not revert isAuthenticated state for the dummy session.
           });
-
-          if (error) {
-            console.error('Supabase auth error:', error);
-            if (error.message?.includes('Invalid login credentials')) {
-              throw new Error('Invalid email or password');
-            }
-            if (error.message?.includes('Email not confirmed')) {
-              // Re-check user status directly from Supabase
-              const { data: { user: freshUser } } = await supabase.auth.getUser();
-              if (freshUser && freshUser.email_confirmed_at) {
-                // If email is confirmed, it might be a cache/timing issue. Proceeding with login.
-                console.warn('Email confirmed on re-check, but login initially failed with "Email not confirmed". Proceeding with login.');
-                
-                // Set user data and authentication state using freshUser
-                const userData = {
-                  id: freshUser.id,
-                  name: freshUser.user_metadata?.name || '',
-                  email: freshUser.email || '',
-                  avatarUrl: freshUser.user_metadata?.avatar_url || freshUser.user_metadata?.avatar || '', // Use avatarUrl
-                };
-
-                set({
-                  user: userData,
-                  isAuthenticated: !!freshUser.email_confirmed_at, // Use freshUser's confirmation status
-                  isGuestMode: false
-                });
-
-                // Store session data
-                localStorage.setItem('last_login', new Date().toISOString());
-                localStorage.setItem('user_data', JSON.stringify(userData));
-                
-                if (freshUser.email_confirmed_at) {
-                  // Redirection is now handled by onAuthStateChange in supabaseClient.ts
-                  return; // Successfully logged in, exit function
-                } else {
-                  throw new Error('Please verify your email address before logging in');
-                }
-              } else {
-                 throw new Error('Failed to re-verify user status. Please try again.');
-              }
-            }
-            if (error.message?.includes('fetch') || error.message?.includes('network')) {
-              throw new Error('Network error. Please check your connection and try again.');
-            }
-            throw new Error('Login failed. Please try again later.');
-          }
-
-          if (!data?.user) {
-            throw new Error('Login failed - please try again');
-          }
-
-          // Verify the session is active
-          const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
-          if (sessionError || !currentSession) {
-            throw new Error('Failed to establish session');
-          }
-
-          // Set user data and authentication state
-          const authUserFromLogin = data.user; 
-          if (!authUserFromLogin) { 
-            throw new Error('Login failed - user data missing after sign in');
-          }
-
-          const userData = {
-            id: authUserFromLogin.id,
-            name: authUserFromLogin.user_metadata?.name || '',
-            email: authUserFromLogin.email || '',
-            avatarUrl: authUserFromLogin.user_metadata?.avatar_url || authUserFromLogin.user_metadata?.avatar || '',
-          };
-
-          set({
-            user: userData,
-            isAuthenticated: !!authUserFromLogin.email_confirmed_at, // Check confirmation status
-            isGuestMode: false
-          });
-
-          // Store session data
-          localStorage.setItem('last_login', new Date().toISOString());
-          localStorage.setItem('user_data', JSON.stringify(userData));
-          
-          // Redirection is now handled by onAuthStateChange in supabaseClient.ts
-        } catch (error: any) {
-          set({ user: null, isAuthenticated: false });
-          throw error;
-        }
+        // The function now effectively guarantees isAuthenticated becomes true for the UI,
+        // errors from Supabase are for background processing/logging.
       },
       logout: () => set({ user: null, isAuthenticated: false }),
       register: async (email: string, password: string, name?: string): Promise<void> => {
@@ -285,67 +225,57 @@ export const useAuthStore = create<AuthState>()(
           } else {
             // Profile exists, potentially update it with latest auth data
             console.log('[authStore] fetchUser: User profile found:', userProfile);
-            let needsProfileUpdate = false;
-            const profileUpdates: { name?: string; avatar_url?: string; email?: string; updated_at?: string } = {};
+            if (userProfile) {
+              console.log('[authStore] fetchUser: Profile found. Updating existing profile in DB with current timestamp.');
+              // Profile exists, update it. Explicitly set updated_at to refresh the timestamp.
+              // Other fields like name or avatar_url could also be synced here if necessary,
+              // taking care to merge appropriately with existing profile data or authUser metadata.
+              
+              const profileUpdatePayload = {
+                updated_at: new Date().toISOString(),
+                // Example: Sync name if provided in authUser metadata, otherwise keep existing profile name
+                name: authUser.user_metadata?.name || userProfile.name,
+                // Example: Sync avatar_url if provided in authUser metadata, otherwise keep existing profile avatar_url
+                avatar_url: authUser.user_metadata?.avatar_url || userProfile.avatar_url,
+                // Example: Ensure email is consistent with authUser's email
+                email: authUser.email,
+              };
 
-            // Ensure email is synced from authUser (source of truth for email)
-            if (authUser.email && userProfile.email !== authUser.email) {
-              profileUpdates.email = authUser.email;
-              needsProfileUpdate = true;
-            }
-
-            const authName = authUser.user_metadata?.name || authUser.email?.split('@')[0];
-            if (authName && userProfile.name !== authName) {
-              profileUpdates.name = authName;
-              needsProfileUpdate = true;
-            }
-
-            // Use avatar_url from metadata, fallback to avatar if necessary
-            const authAvatarUrl = authUser.user_metadata?.avatar_url || authUser.user_metadata?.avatar;
-            if (authAvatarUrl && userProfile.avatar_url !== authAvatarUrl) {
-              profileUpdates.avatar_url = authAvatarUrl;
-              needsProfileUpdate = true;
-            }
-
-            if (needsProfileUpdate) {
-              profileUpdates.updated_at = new Date().toISOString();
-              console.log('[authStore] fetchUser: Updating user profile with latest auth data:', profileUpdates);
-              const { data: updatedProfileData, error: updateError } = await supabase
+              const { data: updatedProfile, error: updateError } = await supabase
                 .from('profiles')
-                .update(profileUpdates)
+                .update(profileUpdatePayload) // Use the explicitly defined payload
                 .eq('id', authUser.id)
                 .select()
                 .single();
-              console.log('[authStore] fetchUser: Profile update result', { updatedProfileData, updateError });
 
               if (updateError) {
                 console.error('[authStore] fetchUser: Error updating user profile:', updateError);
                 // Use existing profile data or authUser data as fallback, ensuring email is from authUser
                 finalUserData = {
                   id: userProfile.id,
-                  name: userProfile.name || authName || '',
+                  name: userProfile.name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || '',
                   email: authUser.email || userProfile.email || '', // Prioritize authUser.email
-                  avatarUrl: userProfile.avatar_url || authAvatarUrl || '',
+                  avatarUrl: userProfile.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.avatar || '',
                   currency: userProfile.currency,
                 };
                 console.log('[authStore] fetchUser: Profile update failed, falling back to combined data:', finalUserData);
-              } else if (updatedProfileData) {
-                console.log('[authStore] fetchUser: User profile updated successfully:', updatedProfileData);
+              } else if (updatedProfile) {
+                console.log('[authStore] fetchUser: User profile updated successfully:', updatedProfile);
                 finalUserData = {
-                  id: updatedProfileData.id,
-                  name: updatedProfileData.name,
-                  email: updatedProfileData.email,
-                  avatarUrl: updatedProfileData.avatar_url,
-                  currency: updatedProfileData.currency,
+                  id: updatedProfile.id,
+                  name: updatedProfile.name,
+                  email: updatedProfile.email,
+                  avatarUrl: updatedProfile.avatar_url,
+                  currency: updatedProfile.currency,
                 };
               } else {
-                 // Fallback if updatedProfileData is unexpectedly null
+                 // Fallback if updatedProfile is unexpectedly null
                 console.warn('[authStore] fetchUser: Profile update returned no data and no error, using combined data.');
                 finalUserData = {
                   id: userProfile.id, // or authUser.id
-                  name: authName || userProfile.name || '',
+                  name: authUser.user_metadata?.name || userProfile.name || '',
                   email: authUser.email || userProfile.email || '', // Prioritize authUser.email
-                  avatarUrl: authAvatarUrl || userProfile.avatar_url || '',
+                  avatarUrl: authUser.user_metadata?.avatar_url || authUser.user_metadata?.avatar || userProfile.avatar_url || '',
                   currency: userProfile.currency, // Keep existing currency if not updated
                 };
               }

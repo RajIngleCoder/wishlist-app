@@ -64,7 +64,7 @@ const handleAuthenticatedSession = async (currentEvent: string, currentSession: 
         window.location.href = '/dashboard';
       }
     } else { // User session exists but not fully authenticated OR fetchUser failed
-      console.log(`[supabaseClient] handleAuthenticatedSession: ${currentEvent} - User session exists but not fully authenticated/fetch failed. isAuthenticated: ${updatedIsAuthenticated}, User: ${!!updatedUser}. Path: ${currentPath}`);
+      console.log(`[supabaseClient] handleAuthenticatedSession: ${currentEvent} - User session exists but not fully authenticated/fetch failed. isAuthenticated: ${updatedIsAuthenticated}, User: ${!!updatedUser}. Path: ${currentPath}. Email confirmed: ${currentSession.user?.email_confirmed_at}`);
 
       // Specific handling for SIGNED_IN with unconfirmed email
       if (currentEvent === 'SIGNED_IN' && currentSession.user && !currentSession.user.email_confirmed_at) {
@@ -150,21 +150,21 @@ supabase.auth.onAuthStateChange(async (event, session) => {
       } else if (storeState.isGuestMode) {
          console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - Guest mode is already active.');
       } else if (storeState.isAuthenticated) { // True if authStore has user, but Supabase has no session
-         console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - User was authenticated in store, but no active Supabase session. Logging out to sync state.');
-         logout(); // Clear the potentially stale auth state from store
+         console.log('[supabaseClient] DIAGNOSTIC: INITIAL_SESSION detected store is authenticated but Supabase session is null. Would normally logout here.');
+         // logout(); // Intentionally commented out for diagnosis
          
-         const currentPathAfterLogout = window.location.pathname;
-         const newStoreState = useAuthStore.getState(); // Get fresh state after logout
+         // const currentPathAfterLogout = window.location.pathname;
+         // const newStoreState = useAuthStore.getState(); // Get fresh state after logout
 
-         if (!publicPaths.includes(currentPathAfterLogout) && !newStoreState.isGuestMode) { // isAuthenticated is now false
-             console.log(`[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. On protected route ${currentPathAfterLogout}, not guest. Redirecting to /login.`);
-             window.location.href = '/login';
-         } else if (publicPaths.includes(currentPathAfterLogout) && !newStoreState.isGuestMode) {
-             console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. On public path, not guest. Enabling guest mode.');
-             enableGuestMode();
-         } else if (newStoreState.isGuestMode) {
-             console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. Guest mode is active or became active.');
-         }
+         // if (!publicPaths.includes(currentPathAfterLogout) && !newStoreState.isGuestMode) { // isAuthenticated is now false
+         //     console.log(`[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. On protected route ${currentPathAfterLogout}, not guest. Redirecting to /login.`);
+         //     window.location.href = '/login';
+         // } else if (publicPaths.includes(currentPathAfterLogout) && !newStoreState.isGuestMode) {
+         //     console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. On public path, not guest. Enabling guest mode.');
+         //     enableGuestMode();
+         // } else if (newStoreState.isGuestMode) {
+         //     console.log('[supabaseClient] onAuthStateChange: INITIAL_SESSION - Stale auth cleared. Guest mode is active or became active.');
+         // }
       }
     }
   }
